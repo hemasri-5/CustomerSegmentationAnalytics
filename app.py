@@ -195,90 +195,165 @@ if not st.session_state.logged_in:
 # --------------------------------------------------
 # EMAIL OTP LOGIN
 # --------------------------------------------------
+
+# --------------------------------------------------
+# LOGIN AND SIGN UP
+# --------------------------------------------------
+
+# --------------------------------------------------
+# LOGIN, SIGN UP AND FORGOT PASSWORD
+# --------------------------------------------------
 if not st.session_state.logged_in:
     st.title("🔐 Welcome!")
     st.subheader("Customer Segmentation & Predictive Analytics")
-    st.write("Sign in using your email address.")
 
-    with st.form("email_form"):
-        email = st.text_input(
-            "Email address",
-            placeholder="you@example.com",
-        ).strip().lower()
+    if "auth_page" not in st.session_state:
+        st.session_state.auth_page = "Login"
 
-        send_otp = st.form_submit_button(
-            "Send verification code",
-            use_container_width=True,
-        )
+    login_tab, signup_tab, forgot_tab = st.tabs(
+        ["Login", "Sign Up", "Forgot Password?"]
+    )
 
-    if send_otp:
-        if (
-            not email
-            or "@" not in email
-            or "." not in email.split("@")[-1]
-        ):
-            st.error("Please enter a valid email address.")
-        else:
-            try:
-                supabase.auth.sign_in_with_otp({
-                    "email": email,
-                    "options": {"should_create_user": True},
-                })
+    # LOGIN WITH EMAIL AND PASSWORD
+    with login_tab:
+        st.write("Login with your registered email and password.")
 
-                st.session_state.otp_email = email
-                st.success(
-                    "If the request succeeded, check your email "
-                    "for the verification code."
-                )
+        with st.form("password_login_form"):
+            email = st.text_input(
+                "Email address",
+                key="login_email",
+            ).strip().lower()
 
-            except Exception as exc:
-                st.error(f"Could not send verification code: {exc}")
+            password = st.text_input(
+                "Password",
+                type="password",
+                key="login_password",
+            )
 
-    if st.session_state.otp_email:
-        st.info(
-            f"Enter the verification code sent to "
-            f"{st.session_state.otp_email}"
-        )
-
-        with st.form("otp_form"):
-            otp = st.text_input(
-                "Email verification code",
-                max_chars=10,
-                placeholder="Enter the code from your email",
-            ).strip()
-
-            verify = st.form_submit_button(
-                "Verify and Login",
+            login_button = st.form_submit_button(
+                "Login",
                 use_container_width=True,
             )
 
-        if verify:
-            if not otp.isdigit():
-                st.error("Please enter the numeric verification code.")
+        if login_button:
+            if not email or not password:
+                st.error("Enter your email and password.")
             else:
                 try:
-                    response = supabase.auth.verify_otp({
-                        "email": st.session_state.otp_email,
-                        "token": otp,
-                        "type": "email",
+                    response = supabase.auth.sign_in_with_password({
+                        "email": email,
+                        "password": password,
                     })
 
-                    if not response.user:
-                        st.error(
-                            "Verification failed. Please request a new code."
-                        )
+                    if response.user:
+                        create_login_session(response.user.id, email)
+                        st.rerun()
                     else:
+                        st.error("Login failed. Check your details.")
+
+                except Exception:
+                    st.error(
+                        "Login failed. Check your email and password, "
+                        "or use Forgot Password if needed."
+                    )
+
+    # SIGN UP WITH EMAIL AND PASSWORD
+    with signup_tab:
+        st.write("Create a new account.")
+
+        with st.form("password_signup_form"):
+            new_email = st.text_input(
+                "Email address",
+                key="signup_email",
+            ).strip().lower()
+
+            new_password = st.text_input(
+                "Create password",
+                type="password",
+                key="signup_password",
+            )
+
+            confirm_password = st.text_input(
+                "Confirm password",
+                type="password",
+                key="confirm_signup_password",
+            )
+
+            signup_button = st.form_submit_button(
+                "Create Account",
+                use_container_width=True,
+            )
+
+        if signup_button:
+            if not new_email or not new_password:
+                st.error("Enter your email and password.")
+            elif "@" not in new_email:
+                st.error("Enter a valid email address.")
+            elif len(new_password) < 8:
+                st.error("Use a password with at least 8 characters.")
+            elif new_password != confirm_password:
+                st.error("The passwords do not match.")
+            else:
+                try:
+                    response = supabase.auth.sign_up({
+                        "email": new_email,
+                        "password": new_password,
+                    })
+
+                    if response.user and response.session:
                         create_login_session(
                             response.user.id,
-                            st.session_state.otp_email,
+                            new_email,
+                        )
+                        st.success("Account created successfully!")
+                        st.rerun()
+                    elif response.user:
+                        st.success(
+                            "Sign-up request received. Check your email "
+                            "to confirm your account, then log in."
+                        )
+                    else:
+                        st.info(
+                            "If sign-up succeeds, check your email "
+                            "for confirmation instructions."
                         )
 
-                        st.session_state.otp_email = ""
-                        st.rerun()
-
-                except Exception as exc:
+                except Exception:
                     st.error(
-                        f"Login/session error: {type(exc).__name__}: {exc}"
+                        "Could not create the account. Check the email "
+                        "or try logging in if you already registered."
+                    )
+
+    # FORGOT PASSWORD
+    with forgot_tab:
+        st.write("Request an email link to reset your password.")
+
+        with st.form("forgot_password_form"):
+            reset_email = st.text_input(
+                "Registered email address",
+                key="reset_email",
+            ).strip().lower()
+
+            reset_button = st.form_submit_button(
+                "Send Password Reset Email",
+                use_container_width=True,
+            )
+
+        if reset_button:
+            if not reset_email or "@" not in reset_email:
+                st.error("Enter a valid email address.")
+            else:
+                try:
+                    supabase.auth.reset_password_for_email(reset_email)
+                    st.success(
+                        "If an account exists for that email, "
+                        "password-reset instructions will be sent. "
+                        "Check your inbox."
+                    )
+                except Exception:
+                    st.error(
+                        "Could not send the reset email. "
+                        "Please try again later."
                     )
 
     st.stop()
