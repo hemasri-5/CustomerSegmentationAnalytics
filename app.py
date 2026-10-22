@@ -1,4 +1,5 @@
 import time
+import streamlit_url_fragment
 import streamlit as st
 import pandas as pd
 import uuid
