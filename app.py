@@ -1,7 +1,12 @@
 
 import streamlit as st
 import pandas as pd
+import uuid
+from datetime import datetime, timedelta, timezone
+
 from supabase import create_client
+from itsdangerous import URLSafeTimedSerializer, BadSignature
+from streamlit_cookies_controller import CookieController
 
 from preprocessing import load_transactions
 from segmentation import segment_customers
@@ -28,38 +33,168 @@ st.set_page_config(
 # SUPABASE CONFIGURATION
 # --------------------------------------------------
 try:
-    supabase = create_client(
-        st.secrets["SUPABASE_URL"],
-        st.secrets["SUPABASE_KEY"],
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    SUPABASE_SECRET_KEY = st.secrets["SUPABASE_SECRET_KEY"]
+    SESSION_SIGNING_KEY = st.secrets["SESSION_SIGNING_KEY"]
+
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+    session_db = create_client(
+        SUPABASE_URL,
+        SUPABASE_SECRET_KEY,
     )
-except Exception:
-    st.error(
-        "Supabase configuration is missing or invalid. "
-        "Please check .streamlit/secrets.toml."
+
+    signer = URLSafeTimedSerializer(
+        SESSION_SIGNING_KEY,
+        salt="customer-segmentation-session",
     )
+
+except Exception as exc:
+    st.error(f"Supabase configuration error: {exc}")
     st.stop()
+
+
+# --------------------------------------------------
+# THREE-DAY LOGIN SESSION
+# --------------------------------------------------
+SESSION_SECONDS = 3 * 24 * 60 * 60
+COOKIE_NAME = "customer_segmentation_session"
+
+controller = CookieController(key="customer_session_cookie")
+
+
+# --------------------------------------------------
+# SESSION STATE
+# --------------------------------------------------
+defaults = {
+    "logged_in": False,
+    "otp_email": "",
+    "auth_email": "",
+    "cookie_checked": False,
+    "saved_session_id": None,
+}
+
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+# --------------------------------------------------
+# CREATE A LOGIN SESSION
+# --------------------------------------------------
+def create_login_session(user_id, email):
+    session_id = str(uuid.uuid4())
+    expires_at = datetime.now(timezone.utc) + timedelta(days=3)
+
+    # Save the session in Supabase.
+    session_db.table("app_sessions").insert({
+        "session_id": session_id,
+        "user_id": user_id,
+        "expires_at": expires_at.isoformat(),
+    }).execute()
+
+    # Sign the cookie data.
+    token = signer.dumps({
+        "session_id": session_id,
+        "email": email,
+    })
+
+    # Save the cookie in the browser.
+    controller.set(
+        COOKIE_NAME,
+        token,
+        expires=expires_at,
+        path="/",
+        secure=True,
+        same_site="lax",
+    )
+
+    st.session_state.logged_in = True
+    st.session_state.auth_email = email
+    st.session_state.saved_session_id = session_id
+
+
+# --------------------------------------------------
+# RESTORE A SAVED LOGIN
+# --------------------------------------------------
+def restore_login_session():
+    token = controller.get(COOKIE_NAME)
+
+    if not token:
+        return False
+
+    try:
+        payload = signer.loads(
+            token,
+            max_age=SESSION_SECONDS,
+        )
+
+        session_id = payload.get("session_id")
+        email = payload.get("email")
+
+        if not session_id or not email:
+            return False
+
+        result = (
+            session_db.table("app_sessions")
+            .select("session_id, user_id, expires_at")
+            .eq("session_id", session_id)
+            .limit(1)
+            .execute()
+        )
+
+        if not result.data:
+            return False
+
+        session = result.data[0]
+
+        expiry = datetime.fromisoformat(
+            session["expires_at"].replace("Z", "+00:00")
+        )
+
+        if expiry <= datetime.now(timezone.utc):
+            session_db.table("app_sessions").delete().eq(
+                "session_id", session_id
+            ).execute()
+            return False
+
+        st.session_state.logged_in = True
+        st.session_state.auth_email = email
+        st.session_state.saved_session_id = session_id
+
+        return True
+
+    except (BadSignature, ValueError, TypeError, KeyError):
+        return False
+
+    except Exception as exc:
+        st.warning(f"Could not restore saved login: {exc}")
+        return False
+
+
+# --------------------------------------------------
+# CHECK FOR A SAVED LOGIN
+# --------------------------------------------------
+if (
+    not st.session_state.logged_in
+    and not st.session_state.cookie_checked
+):
+    try:
+        restore_login_session()
+    finally:
+        st.session_state.cookie_checked = True
 
 
 # --------------------------------------------------
 # EMAIL OTP LOGIN
 # --------------------------------------------------
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if "otp_email" not in st.session_state:
-    st.session_state.otp_email = ""
-
-if "auth_email" not in st.session_state:
-    st.session_state.auth_email = ""
-
-
 if not st.session_state.logged_in:
 
     st.title("🔐 Welcome!")
     st.subheader("Customer Segmentation & Predictive Analytics")
     st.write("Sign in using your email address.")
 
-    # Send verification code
     with st.form("email_form"):
         email = st.text_input(
             "Email address",
@@ -78,16 +213,15 @@ if not st.session_state.logged_in:
             or "." not in email.split("@")[-1]
         ):
             st.error("Please enter a valid email address.")
+
         else:
             try:
-                supabase.auth.sign_in_with_otp(
-                    {
-                        "email": email,
-                        "options": {
-                            "should_create_user": True,
-                        },
-                    }
-                )
+                supabase.auth.sign_in_with_otp({
+                    "email": email,
+                    "options": {
+                        "should_create_user": True,
+                    },
+                })
 
                 st.session_state.otp_email = email
 
@@ -96,13 +230,9 @@ if not st.session_state.logged_in:
                     "for the verification code."
                 )
 
-            except Exception:
-                st.error(
-                    "Could not send the verification code. "
-                    "Check your Supabase email settings and try again."
-                )
+            except Exception as exc:
+                st.error(f"Could not send verification code: {exc}")
 
-    # Verify code
     if st.session_state.otp_email:
 
         st.info(
@@ -128,33 +258,33 @@ if not st.session_state.logged_in:
 
             else:
                 try:
-                    response = supabase.auth.verify_otp(
-                        {
-                            "email": st.session_state.otp_email,
-                            "token": otp,
-                            "type": "email",
-                        }
-                    )
+                    response = supabase.auth.verify_otp({
+                        "email": st.session_state.otp_email,
+                        "token": otp,
+                        "type": "email",
+                    })
 
-                    if response.user:
-                        st.session_state.logged_in = True
-                        st.session_state.auth_email = (
-                            st.session_state.otp_email
-                        )
-                        st.session_state.otp_email = ""
-
-                        st.rerun()
-
-                    else:
+                    if not response.user:
                         st.error(
                             "Verification failed. "
                             "Please request a new code."
                         )
 
-                except Exception:
+                    else:
+                        create_login_session(
+                            response.user.id,
+                            st.session_state.otp_email,
+                        )
+
+                        st.session_state.otp_email = ""
+                        st.session_state.cookie_checked = True
+
+                        st.rerun()
+
+                except Exception as exc:
+                    # Display the real error for diagnosis.
                     st.error(
-                        "The code is incorrect or expired. "
-                        "Please check it and try again."
+                        f"Login/session error: {type(exc).__name__}: {exc}"
                     )
 
     st.stop()
@@ -177,19 +307,33 @@ st.caption(
 with st.sidebar:
 
     st.header("Project Controls")
-
     st.write(f"Signed in as: {st.session_state.auth_email}")
 
     if st.button("Logout", use_container_width=True):
 
         try:
+            session_id = st.session_state.get("saved_session_id")
+
+            if session_id:
+                (
+                    session_db.table("app_sessions")
+                    .delete()
+                    .eq("session_id", session_id)
+                    .execute()
+                )
+
+            controller.remove(COOKIE_NAME, path="/")
+
             supabase.auth.sign_out()
-        except Exception:
-            pass
+
+        except Exception as exc:
+            st.warning(f"Logout cleanup warning: {exc}")
 
         st.session_state.logged_in = False
         st.session_state.otp_email = ""
         st.session_state.auth_email = ""
+        st.session_state.saved_session_id = None
+        st.session_state.cookie_checked = True
 
         st.rerun()
 
@@ -254,7 +398,6 @@ with st.spinner(
         sales, evaluation_data, forecasts, metrics = forecast_sales(
             df, periods
         )
-
         prediction_error = None
 
     except Exception as exc:
@@ -279,14 +422,12 @@ c4.metric("Customer segments", f"{rfm['Segment'].nunique()}")
 # --------------------------------------------------
 # DASHBOARD TABS
 # --------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs(
-    [
-        "Overview",
-        "Customer Segmentation",
-        "Predictive Analytics",
-        "Data Explorer",
-    ]
-)
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Overview",
+    "Customer Segmentation",
+    "Predictive Analytics",
+    "Data Explorer",
+])
 
 
 # --------------------------------------------------
@@ -304,18 +445,15 @@ with tab1:
     left, right = st.columns(2)
 
     with left:
-
         if not sales.empty:
             fig = sales_line(sales)
 
             if fig is not None:
                 st.pyplot(fig, clear_figure=True)
-
         else:
             st.info("Not enough sales history to plot.")
 
     with right:
-
         fig = segment_bar(summary)
 
         if fig is not None:
@@ -323,21 +461,16 @@ with tab1:
 
     st.subheader("Top 10 Customers by Revenue")
 
-    top = rfm.sort_values(
-        "Monetary",
-        ascending=False,
-    ).head(10)
+    top = rfm.sort_values("Monetary", ascending=False).head(10)
 
     st.dataframe(
-        top[
-            [
-                "CustomerID",
-                "Recency",
-                "Frequency",
-                "Monetary",
-                "SegmentName",
-            ]
-        ],
+        top[[
+            "CustomerID",
+            "Recency",
+            "Frequency",
+            "Monetary",
+            "SegmentName",
+        ]],
         use_container_width=True,
     )
 
@@ -362,10 +495,7 @@ with tab2:
 
     st.subheader("Segment Summary")
 
-    st.dataframe(
-        summary.round(2),
-        use_container_width=True,
-    )
+    st.dataframe(summary.round(2), use_container_width=True)
 
     st.download_button(
         "Download customer segments CSV",
@@ -437,7 +567,6 @@ with tab3:
 
         if "R2" in metrics and pd.notna(metrics["R2"]):
             st.write(f"**Test-set R²:** {metrics['R2']:.3f}")
-
         else:
             st.write(
                 "**Test-set R²:** not available for a single test week."
@@ -450,7 +579,6 @@ with tab3:
         )
 
     else:
-
         st.warning(
             "Forecast results are not available for this dataset."
         )
@@ -463,10 +591,7 @@ with tab4:
 
     st.subheader("Cleaned Transaction Data")
 
-    st.dataframe(
-        df.head(500),
-        use_container_width=True,
-    )
+    st.dataframe(df.head(500), use_container_width=True)
 
     st.download_button(
         "Download cleaned data CSV",
