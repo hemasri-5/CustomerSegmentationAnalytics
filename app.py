@@ -1,6 +1,7 @@
 
 import streamlit as st
 import pandas as pd
+from supabase import create_client
 
 from preprocessing import load_transactions
 from segmentation import segment_customers
@@ -12,6 +13,7 @@ from visualizations import (
     forecast_line,
 )
 
+
 # --------------------------------------------------
 # PAGE CONFIGURATION
 # --------------------------------------------------
@@ -21,52 +23,174 @@ st.set_page_config(
     layout="wide",
 )
 
+
 # --------------------------------------------------
-# DEMO LOGIN SYSTEM
+# SUPABASE CONFIGURATION
+# --------------------------------------------------
+try:
+    supabase = create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_KEY"],
+    )
+except Exception:
+    st.error(
+        "Supabase configuration is missing or invalid. "
+        "Please check .streamlit/secrets.toml."
+    )
+    st.stop()
+
+
+# --------------------------------------------------
+# EMAIL OTP LOGIN
 # --------------------------------------------------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
+if "otp_email" not in st.session_state:
+    st.session_state.otp_email = ""
+
+if "auth_email" not in st.session_state:
+    st.session_state.auth_email = ""
+
+
 if not st.session_state.logged_in:
-    st.title("🔐 Welcome Back!")
+
+    st.title("🔐 Welcome!")
     st.subheader("Customer Segmentation & Predictive Analytics")
-    st.write("Please log in to access your dashboard.")
+    st.write("Sign in using your email address.")
 
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+    # Send verification code
+    with st.form("email_form"):
+        email = st.text_input(
+            "Email address",
+            placeholder="you@example.com",
+        ).strip().lower()
 
-        submitted = st.form_submit_button(
-            "Login",
+        send_otp = st.form_submit_button(
+            "Send verification code",
             use_container_width=True,
         )
 
-    if submitted:
-        if username == "admin" and password == "demo123":
-            st.session_state.logged_in = True
-            st.rerun()
+    if send_otp:
+        if (
+            not email
+            or "@" not in email
+            or "." not in email.split("@")[-1]
+        ):
+            st.error("Please enter a valid email address.")
         else:
-            st.error("Invalid username or password. Please try again.")
+            try:
+                supabase.auth.sign_in_with_otp(
+                    {
+                        "email": email,
+                        "options": {
+                            "should_create_user": True,
+                        },
+                    }
+                )
+
+                st.session_state.otp_email = email
+
+                st.success(
+                    "If the request succeeded, check your email "
+                    "for the verification code."
+                )
+
+            except Exception:
+                st.error(
+                    "Could not send the verification code. "
+                    "Check your Supabase email settings and try again."
+                )
+
+    # Verify code
+    if st.session_state.otp_email:
+
+        st.info(
+            f"Enter the verification code sent to "
+            f"{st.session_state.otp_email}"
+        )
+
+        with st.form("otp_form"):
+            otp = st.text_input(
+                "Email verification code",
+                max_chars=10,
+                placeholder="Enter the code from your email",
+            ).strip()
+
+            verify = st.form_submit_button(
+                "Verify and Login",
+                use_container_width=True,
+            )
+
+        if verify:
+            if not otp.isdigit():
+                st.error("Please enter the numeric verification code.")
+
+            else:
+                try:
+                    response = supabase.auth.verify_otp(
+                        {
+                            "email": st.session_state.otp_email,
+                            "token": otp,
+                            "type": "email",
+                        }
+                    )
+
+                    if response.user:
+                        st.session_state.logged_in = True
+                        st.session_state.auth_email = (
+                            st.session_state.otp_email
+                        )
+                        st.session_state.otp_email = ""
+
+                        st.rerun()
+
+                    else:
+                        st.error(
+                            "Verification failed. "
+                            "Please request a new code."
+                        )
+
+                except Exception:
+                    st.error(
+                        "The code is incorrect or expired. "
+                        "Please check it and try again."
+                    )
 
     st.stop()
+
 
 # --------------------------------------------------
 # MAIN DASHBOARD
 # --------------------------------------------------
 st.title("📊 Customer Segmentation & Predictive Analytics System")
+
 st.caption(
     "A team project combining customer grouping, "
     "sales forecasting, and business insights."
 )
 
+
 # --------------------------------------------------
 # SIDEBAR CONTROLS
 # --------------------------------------------------
 with st.sidebar:
+
     st.header("Project Controls")
 
+    st.write(f"Signed in as: {st.session_state.auth_email}")
+
     if st.button("Logout", use_container_width=True):
+
+        try:
+            supabase.auth.sign_out()
+        except Exception:
+            pass
+
         st.session_state.logged_in = False
+        st.session_state.otp_email = ""
+        st.session_state.auth_email = ""
+
         st.rerun()
 
     st.divider()
@@ -94,10 +218,12 @@ with st.sidebar:
         "Required columns: InvoiceNo, Quantity, InvoiceDate, "
         "UnitPrice, CustomerID."
     )
+
     st.caption(
         "If no file is uploaded, the app uses the included "
         "synthetic demo dataset."
     )
+
 
 # --------------------------------------------------
 # LOAD TRANSACTION DATA
@@ -109,12 +235,14 @@ except Exception as exc:
     st.error(f"Could not load the data: {exc}")
     st.stop()
 
+
 # --------------------------------------------------
 # CUSTOMER SEGMENTATION AND SALES FORECASTING
 # --------------------------------------------------
 with st.spinner(
     "Analyzing customers and training the forecasting model..."
 ):
+
     try:
         rfm, summary = segment_customers(df, clusters)
 
@@ -126,6 +254,7 @@ with st.spinner(
         sales, evaluation_data, forecasts, metrics = forecast_sales(
             df, periods
         )
+
         prediction_error = None
 
     except Exception as exc:
@@ -134,6 +263,7 @@ with st.spinner(
         forecasts = pd.DataFrame()
         metrics = {}
         prediction_error = str(exc)
+
 
 # --------------------------------------------------
 # SUMMARY METRICS
@@ -144,6 +274,7 @@ c1.metric("Transactions / lines", f"{len(df):,}")
 c2.metric("Unique customers", f"{df['CustomerID'].nunique():,}")
 c3.metric("Total sales", f"{df['Sales'].sum():,.2f}")
 c4.metric("Customer segments", f"{rfm['Segment'].nunique()}")
+
 
 # --------------------------------------------------
 # DASHBOARD TABS
@@ -157,10 +288,12 @@ tab1, tab2, tab3, tab4 = st.tabs(
     ]
 )
 
+
 # --------------------------------------------------
 # TAB 1: BUSINESS OVERVIEW
 # --------------------------------------------------
 with tab1:
+
     st.subheader("Business Overview")
 
     st.write(
@@ -171,15 +304,18 @@ with tab1:
     left, right = st.columns(2)
 
     with left:
+
         if not sales.empty:
             fig = sales_line(sales)
 
             if fig is not None:
                 st.pyplot(fig, clear_figure=True)
+
         else:
             st.info("Not enough sales history to plot.")
 
     with right:
+
         fig = segment_bar(summary)
 
         if fig is not None:
@@ -205,10 +341,12 @@ with tab1:
         use_container_width=True,
     )
 
+
 # --------------------------------------------------
 # TAB 2: CUSTOMER SEGMENTATION
 # --------------------------------------------------
 with tab2:
+
     st.subheader("Customer Segmentation with RFM + K-Means")
 
     st.write(
@@ -243,18 +381,22 @@ with tab2:
         mime="text/csv",
     )
 
+
 # --------------------------------------------------
 # TAB 3: PREDICTIVE ANALYTICS
 # --------------------------------------------------
 with tab3:
+
     st.subheader("Weekly Sales Forecasting")
 
     if prediction_error:
+
         st.warning(
             f"Forecasting could not be completed: {prediction_error}"
         )
 
     elif not forecasts.empty and metrics:
+
         m1, m2, m3 = st.columns(3)
 
         m1.metric("MAE", f"{metrics['MAE']:,.2f}")
@@ -295,6 +437,7 @@ with tab3:
 
         if "R2" in metrics and pd.notna(metrics["R2"]):
             st.write(f"**Test-set R²:** {metrics['R2']:.3f}")
+
         else:
             st.write(
                 "**Test-set R²:** not available for a single test week."
@@ -307,14 +450,17 @@ with tab3:
         )
 
     else:
+
         st.warning(
             "Forecast results are not available for this dataset."
         )
+
 
 # --------------------------------------------------
 # TAB 4: DATA EXPLORER
 # --------------------------------------------------
 with tab4:
+
     st.subheader("Cleaned Transaction Data")
 
     st.dataframe(
@@ -331,10 +477,12 @@ with tab4:
 
     st.caption("Showing up to the first 500 rows in the table.")
 
+
 # --------------------------------------------------
 # BUSINESS RECOMMENDATIONS
 # --------------------------------------------------
 st.divider()
+
 st.subheader("Business Recommendations")
 
 st.markdown("""
