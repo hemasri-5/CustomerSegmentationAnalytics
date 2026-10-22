@@ -344,7 +344,14 @@ if not st.session_state.logged_in:
                 st.error("Enter a valid email address.")
             else:
                 try:
-                    supabase.auth.reset_password_for_email(reset_email)
+                    
+                    supabase.auth.reset_password_for_email(
+                        reset_email,
+                        {
+                            "redirect_to": "https://customersegmentationanalytics-dx7lqqo7ziyxfgi9rzw5dq.streamlit.app/"
+                        },
+                    )
+
                     st.success(
                         "If an account exists for that email, "
                         "password-reset instructions will be sent. "
