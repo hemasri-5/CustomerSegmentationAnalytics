@@ -62,6 +62,7 @@ SESSION_SECONDS = 3 * 24 * 60 * 60
 COOKIE_NAME = "customer_segmentation_session"
 
 controller = CookieController(key="customer_session_cookie")
+controller.getAll()
 
 
 # --------------------------------------------------
@@ -176,14 +177,18 @@ def restore_login_session():
 # --------------------------------------------------
 # CHECK FOR A SAVED LOGIN
 # --------------------------------------------------
-if (
-    not st.session_state.logged_in
-    and not st.session_state.cookie_checked
-):
-    try:
+if not st.session_state.logged_in:
+    token = controller.get(COOKIE_NAME)
+
+    # The cookie component may not have loaded yet.
+    if token is None:
+        st.info("Restoring your saved login...")
+        st.stop()
+
+    if token:
         restore_login_session()
-    finally:
-        st.session_state.cookie_checked = True
+
+    st.session_state.cookie_checked = True
 
 
 # --------------------------------------------------
