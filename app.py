@@ -50,8 +50,15 @@ with tab1:
     st.subheader("Business Overview")
     st.write("Use these insights to understand customer value and plan marketing or inventory decisions.")
     left, right = st.columns(2)
-    with left:
-        st.pyplot(sales_line(sales) if not sales.empty else None, clear_figure=True) if not sales.empty else st.info("Not enough sales history to plot.")
+    
+with left:
+    if not sales.empty:
+        fig = sales_line(sales)
+        if fig is not None:
+            st.pyplot(fig, clear_figure=True)
+    else:
+        st.info("Not enough sales history to plot.")
+
     with right:
         st.pyplot(segment_bar(summary), clear_figure=True)
     top = rfm.sort_values("Monetary", ascending=False).head(10)
