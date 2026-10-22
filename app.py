@@ -1,5 +1,6 @@
 import time
 import streamlit_url_fragment
+from urllib.parse import parse_qs
 import streamlit as st
 import pandas as pd
 import uuid
@@ -70,6 +71,9 @@ defaults = {
     "auth_email": "",
     "saved_session_id": None,
     "login_restore_attempted": False,
+    "recovery_mode": False,
+    "recovery_completed": False,
+    "recovery_error": "",
 }
 
 for key, value in defaults.items():
@@ -167,7 +171,90 @@ def restore_login_session(token):
     except Exception as exc:
         st.warning(f"Could not restore saved login: {exc}")
         return False
+# --------------------------------------------------
+# PASSWORD RECOVERY
+# --------------------------------------------------
+fragment = streamlit_url_fragment.get_fragment()
 
+if fragment and not st.session_state.recovery_completed:
+    params = parse_qs(fragment.lstrip("#"))
+
+    recovery_type = params.get("type", [""])[0]
+    access_token = params.get("access_token", [""])[0]
+    refresh_token = params.get("refresh_token", [""])[0]
+
+    if recovery_type == "recovery":
+        if access_token and refresh_token:
+            try:
+                supabase.auth.set_session(
+                    access_token,
+                    refresh_token,
+                )
+                st.session_state.recovery_mode = True
+
+            except Exception:
+                st.session_state.recovery_error = (
+                    "Your reset link is invalid or expired. "
+                    "Please request a new reset email."
+                )
+        else:
+            st.session_state.recovery_error = (
+                "Recovery information is missing. "
+                "Please request a new reset email."
+            )
+
+if st.session_state.recovery_error:
+    st.title("Reset your password")
+    st.error(st.session_state.recovery_error)
+    st.stop()
+
+if st.session_state.recovery_mode:
+    st.title("🔐 Set a New Password")
+
+    with st.form("set_new_password_form"):
+        new_password = st.text_input(
+            "New password",
+            type="password",
+        )
+        confirm_password = st.text_input(
+            "Confirm new password",
+            type="password",
+        )
+
+        submitted = st.form_submit_button(
+            "Update Password",
+            use_container_width=True,
+        )
+
+    if submitted:
+        if len(new_password) < 8:
+            st.error("Use at least 8 characters.")
+        elif new_password != confirm_password:
+            st.error("The passwords do not match.")
+        else:
+            try:
+                response = supabase.auth.update_user({
+                    "password": new_password,
+                })
+
+                if response.user:
+                    st.session_state.recovery_mode = False
+                    st.session_state.recovery_completed = True
+                    st.success(
+                        "Password updated! You can now log in "
+                        "with your new password."
+                    )
+                    st.rerun()
+                else:
+                    st.error("Password update failed.")
+
+            except Exception:
+                st.error(
+                    "Could not update the password. "
+                    "Request a new reset link and try again."
+                )
+
+    st.stop()
 
 # --------------------------------------------------
 # CHECK FOR A SAVED LOGIN
