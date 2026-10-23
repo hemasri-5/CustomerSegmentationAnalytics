@@ -1009,9 +1009,23 @@ with tab3:
     elif not forecasts.empty and metrics:
         m1, m2, m3 = st.columns(3)
 
-        m1.metric("MAE", f"{metrics['MAE']:,.2f}")
-        m2.metric("RMSE", f"{metrics['RMSE']:,.2f}")
+
+        m1.metric("Model MAE", f"{metrics['MAE']:,.2f}")
+        m2.metric("Model RMSE", f"{metrics['RMSE']:,.2f}")
         m3.metric("Test weeks", f"{metrics['Test weeks']}")
+
+        if "Baseline MAE" in metrics and "Baseline RMSE" in metrics:
+            st.subheader("Model vs Baseline")
+
+            b1, b2 = st.columns(2)
+            b1.metric(
+                "Baseline MAE",
+                f"{metrics['Baseline MAE']:,.2f}"
+            )
+            b2.metric(
+                "Baseline RMSE",
+                f"{metrics['Baseline RMSE']:,.2f}"
+            )
 
         st.caption(
             "MAE and RMSE measure test-set error; lower is generally "
