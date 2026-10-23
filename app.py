@@ -11,7 +11,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature
 from streamlit_cookies_controller import CookieController
 
 from preprocessing import load_transactions
-from segmentation import segment_customers
+from segmentation import segment_customers, evaluate_clusters
 from prediction import forecast_sales
 from visualizations import (
     segment_scatter,
@@ -630,40 +630,266 @@ with tab1:
 
 
 # --------------------------------------------------
-# TAB 2: CUSTOMER SEGMENTATION
+# TAB 2: ADVANCED CUSTOMER SEGMENTATION DASHBOARD
 # --------------------------------------------------
 with tab2:
-    st.subheader("Customer Segmentation with RFM + K-Means")
-
+    st.subheader("Advanced Customer Segmentation Dashboard")
     st.write(
-        "Recency = days since last purchase. "
-        "Frequency = distinct orders. "
-        "Monetary = total customer spend."
+        "Explore customer value, buying activity, segment profiles, "
+        "and customer-level details using RFM analysis and K-Means."
     )
 
-    fig = segment_scatter(rfm)
-    if fig is not None:
-        st.pyplot(fig, clear_figure=True)
+    required_rfm_columns = {
+        "CustomerID", "Recency", "Frequency", "Monetary",
+        "Segment", "SegmentName"
+    }
+    missing_rfm_columns = required_rfm_columns - set(rfm.columns)
 
-    st.subheader("Segment Summary")
-    st.dataframe(summary.round(2), use_container_width=True)
+    if missing_rfm_columns:
+        st.error(
+            "The segmentation output is missing required columns: "
+            + ", ".join(sorted(missing_rfm_columns))
+        )
+    else:
+        # Normalize values for robust dashboard filters.
+        dashboard_rfm = rfm.copy()
+        dashboard_rfm["CustomerID"] = dashboard_rfm["CustomerID"].astype(str)
+        dashboard_rfm["SegmentName"] = (
+            dashboard_rfm["SegmentName"].fillna("Unlabelled segment").astype(str)
+        )
 
-    st.download_button(
-        "Download customer segments CSV",
-        rfm.to_csv(index=False).encode("utf-8"),
-        file_name="customer_segments.csv",
-        mime="text/csv",
+        st.markdown("### Customer portfolio at a glance")
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Customers analyzed", f"{dashboard_rfm['CustomerID'].nunique():,}")
+        k2.metric("Total customer revenue", f"{dashboard_rfm['Monetary'].sum():,.2f}")
+        k3.metric("Average customer spend", f"{dashboard_rfm['Monetary'].mean():,.2f}")
+        k4.metric("Average order frequency", f"{dashboard_rfm['Frequency'].mean():,.2f}")
+
+        st.divider()
+        st.markdown("### Interactive customer filters")
+
+        f1, f2, f3 = st.columns([1, 1, 1.4])
+        segment_options = ["All segments"] + sorted(
+            dashboard_rfm["SegmentName"].unique().tolist()
+        )
+
+        with f1:
+            selected_segment_name = st.selectbox(
+                "Customer segment",
+                options=segment_options,
+                key="advanced_segment_filter",
+            )
+
+        with f2:
+            sort_choice = st.selectbox(
+                "Sort customers by",
+                options=[
+                    "Highest spend",
+                    "Lowest spend",
+                    "Most frequent orders",
+                    "Least recent purchase",
+                    "Most recent purchase",
+                ],
+                key="advanced_segment_sort",
+            )
+
+        with f3:
+            customer_search = st.text_input(
+                "Search Customer ID",
+                placeholder="Enter all or part of a customer ID",
+                key="advanced_customer_search",
+            ).strip()
+
+        filtered_rfm = dashboard_rfm.copy()
+        if selected_segment_name != "All segments":
+            filtered_rfm = filtered_rfm[
+                filtered_rfm["SegmentName"] == selected_segment_name
+            ]
+
+        if customer_search:
+            filtered_rfm = filtered_rfm[
+                filtered_rfm["CustomerID"].str.contains(
+                    customer_search, case=False, na=False, regex=False
+                )
+            ]
+
+        sort_columns = {
+            "Highest spend": ("Monetary", False),
+            "Lowest spend": ("Monetary", True),
+            "Most frequent orders": ("Frequency", False),
+            "Least recent purchase": ("Recency", False),
+            "Most recent purchase": ("Recency", True),
+        }
+        sort_column, ascending = sort_columns[sort_choice]
+        filtered_rfm = filtered_rfm.sort_values(
+            sort_column, ascending=ascending
+        )
+
+        st.caption(
+            f"Showing {len(filtered_rfm):,} customer record(s) after filters."
+        )
+
+        st.markdown("### Filtered customer metrics")
+        f_k1, f_k2, f_k3 = st.columns(3)
+        f_k1.metric("Customers in view", f"{filtered_rfm['CustomerID'].nunique():,}")
+        f_k2.metric(
+            "Revenue in view",
+            f"{filtered_rfm['Monetary'].sum():,.2f}"
+        )
+        f_k3.metric(
+            "Average recency (days)",
+            f"{filtered_rfm['Recency'].mean():,.1f}"
+            if not filtered_rfm.empty else "—"
+        )
+
+        st.markdown("### Customer-level RFM table")
+        table_columns = [
+            col for col in [
+                "CustomerID", "Recency", "Frequency", "Monetary",
+                "Segment", "SegmentName"
+            ] if col in filtered_rfm.columns
+        ]
+        st.dataframe(
+            filtered_rfm[table_columns].round(2),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.download_button(
+            "Download filtered customer list (CSV)",
+            filtered_rfm.to_csv(index=False).encode("utf-8"),
+            file_name="filtered_customer_segments.csv",
+            mime="text/csv",
+            key="download_filtered_customer_segments",
+        )
+
+        st.divider()
+        st.markdown("### Segment profile comparison")
+
+        profile = (
+            dashboard_rfm.groupby(["Segment", "SegmentName"], dropna=False)
+            .agg(
+                Customers=("CustomerID", "nunique"),
+                AvgRecency=("Recency", "mean"),
+                AvgFrequency=("Frequency", "mean"),
+                AvgMonetary=("Monetary", "mean"),
+                TotalRevenue=("Monetary", "sum"),
+            )
+            .reset_index()
+            .sort_values("Segment")
+        )
+
+        chart_left, chart_right = st.columns(2)
+        with chart_left:
+            st.markdown("**Customers per segment**")
+            st.bar_chart(
+                profile.set_index("SegmentName")[["Customers"]]
+            )
+
+            st.markdown("**Total revenue per segment**")
+            st.bar_chart(
+                profile.set_index("SegmentName")[["TotalRevenue"]]
+            )
+
+        with chart_right:
+            st.markdown("**Average spending per segment**")
+            st.bar_chart(
+                profile.set_index("SegmentName")[["AvgMonetary"]]
+            )
+
+            st.markdown("**Average purchase frequency**")
+            st.bar_chart(
+                profile.set_index("SegmentName")[["AvgFrequency"]]
+            )
+
+        st.markdown("**Detailed segment profile**")
+        st.dataframe(profile.round(2), use_container_width=True, hide_index=True)
+
+        st.markdown("### RFM relationship explorer")
+        x_choice = st.selectbox(
+            "Horizontal axis",
+            options=["Recency", "Frequency", "Monetary"],
+            index=0,
+            key="rfm_x_axis",
+        )
+        y_choice = st.selectbox(
+            "Vertical axis",
+            options=["Monetary", "Frequency", "Recency"],
+            index=1,
+            key="rfm_y_axis",
+        )
+        scatter_data = dashboard_rfm[[x_choice, y_choice, "SegmentName"]].copy()
+        scatter_data = scatter_data.rename(
+            columns={"SegmentName": "Segment label"}
+        )
+        st.caption(
+            "Use these relationships to inspect patterns. Recency is measured "
+            "in days; Frequency is the number of orders; Monetary is total spend."
+        )
+        st.scatter_chart(
+            scatter_data,
+            x=x_choice,
+            y=y_choice,
+            color="Segment label",
+        )
+
+        st.download_button(
+            "Download complete segment profile (CSV)",
+            profile.to_csv(index=False).encode("utf-8"),
+            file_name="advanced_segment_profile.csv",
+            mime="text/csv",
+            key="download_advanced_segment_profile",
+        )
+
+    # Cluster quality evaluation retained from the existing dashboard.
+    st.divider()
+    st.subheader("Cluster Quality Evaluation")
+    st.write(
+        "Evaluate candidate cluster counts using the Elbow Method and "
+        "Silhouette Score. These metrics support the choice of K, but "
+        "business usefulness should also be considered."
     )
 
-    st.download_button(
-        "Download segment summary CSV",
-        summary.to_csv(index=False).encode("utf-8"),
-        file_name="segment_summary.csv",
-        mime="text/csv",
-    )
+    try:
+        evaluation_df = evaluate_clusters(df, max_clusters=8)
+
+        if evaluation_df.empty:
+            st.warning("No cluster evaluation results are available.")
+        else:
+            quality_left, quality_right = st.columns(2)
+
+            with quality_left:
+                st.markdown("**Elbow Method — Inertia**")
+                st.line_chart(evaluation_df.set_index("K")[["Inertia"]])
+
+            with quality_right:
+                st.markdown("**Silhouette Score**")
+                st.line_chart(
+                    evaluation_df.set_index("K")[["SilhouetteScore"]]
+                )
+
+            st.dataframe(
+                evaluation_df.round(4),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            valid_scores = evaluation_df.dropna(subset=["SilhouetteScore"])
+            if not valid_scores.empty:
+                best_row = valid_scores.loc[
+                    valid_scores["SilhouetteScore"].idxmax()
+                ]
+                st.info(
+                    f"Among the tested values, K = {int(best_row['K'])} "
+                    f"has the highest silhouette score "
+                    f"({float(best_row['SilhouetteScore']):.3f}). "
+                    "Compare its customer profiles before changing the "
+                    "selected number of segments."
+                )
+    except (ValueError, KeyError) as exc:
+        st.warning(f"Cluster evaluation unavailable: {exc}")
 
 
-# --------------------------------------------------
 # TAB 3: PREDICTIVE ANALYTICS
 # --------------------------------------------------
 with tab3:
