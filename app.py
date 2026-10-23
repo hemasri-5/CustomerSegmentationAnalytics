@@ -805,6 +805,112 @@ with tab2:
         st.markdown("**Detailed segment profile**")
         st.dataframe(profile.round(2), use_container_width=True, hide_index=True)
 
+        # Segment Details & Action Plan
+        st.divider()
+        st.markdown("### Segment Details & Action Plan")
+        st.write(
+            "Choose one segment to inspect its customer profile and view "
+            "practical actions to test. These suggestions are guidelines, "
+            "not guaranteed outcomes."
+        )
+
+        detail_segment = st.selectbox(
+            "Choose a segment to explore",
+            options=sorted(dashboard_rfm["SegmentName"].unique().tolist()),
+            key="segment_details_action_plan",
+        )
+        detail_profile = profile[profile["SegmentName"] == detail_segment]
+        detail_customers = dashboard_rfm[
+            dashboard_rfm["SegmentName"] == detail_segment
+        ].copy()
+
+        if not detail_profile.empty and not detail_customers.empty:
+            segment_row = detail_profile.iloc[0]
+            total_customers = max(int(dashboard_rfm["CustomerID"].nunique()), 1)
+            customer_share = (
+                detail_customers["CustomerID"].nunique() / total_customers * 100
+            )
+            total_revenue_all = float(dashboard_rfm["Monetary"].sum())
+            revenue_share = (
+                float(detail_customers["Monetary"].sum()) / total_revenue_all * 100
+                if total_revenue_all else 0.0
+            )
+
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Customers", f"{detail_customers['CustomerID'].nunique():,}")
+            d2.metric("Share of customers", f"{customer_share:.1f}%")
+            d3.metric("Segment revenue", f"{detail_customers['Monetary'].sum():,.2f}")
+            d4.metric("Share of revenue", f"{revenue_share:.1f}%")
+
+            p1, p2, p3 = st.columns(3)
+            p1.metric("Average spend", f"{detail_customers['Monetary'].mean():,.2f}")
+            p2.metric("Average frequency", f"{detail_customers['Frequency'].mean():,.2f}")
+            p3.metric(
+                "Average recency (days)",
+                f"{detail_customers['Recency'].mean():,.1f}",
+            )
+
+            avg_recency = float(detail_customers["Recency"].mean())
+            avg_frequency = float(detail_customers["Frequency"].mean())
+            avg_spend = float(detail_customers["Monetary"].mean())
+            overall_frequency = float(dashboard_rfm["Frequency"].mean())
+            overall_spend = float(dashboard_rfm["Monetary"].mean())
+
+            if avg_recency >= 60:
+                action_heading = "Re-engagement to test"
+                action_items = [
+                    "Review recent purchase history before contacting customers.",
+                    "Test a friendly win-back message with relevant products.",
+                    "Measure response and repeat-purchase rates before expanding the campaign.",
+                ]
+            elif avg_frequency >= overall_frequency and avg_spend >= overall_spend:
+                action_heading = "Retention and loyalty to test"
+                action_items = [
+                    "Consider a loyalty benefit or early access to relevant offers.",
+                    "Personalize recommendations using past purchases.",
+                    "Track repeat purchase rate and revenue per customer.",
+                ]
+            elif avg_frequency >= overall_frequency:
+                action_heading = "Repeat-purchase growth to test"
+                action_items = [
+                    "Recommend complementary products based on purchase history.",
+                    "Test reminders or bundles that fit customers' buying patterns.",
+                    "Compare repeat-purchase rates with a baseline group.",
+                ]
+            else:
+                action_heading = "Customer development to test"
+                action_items = [
+                    "Test relevant product bundles or introductory offers.",
+                    "Use purchase history to avoid irrelevant promotions.",
+                    "Monitor average order value and repeat purchases.",
+                ]
+
+            st.markdown(f"**Suggested action theme: {action_heading}**")
+            for action in action_items:
+                st.markdown(f"- {action}")
+
+            st.markdown("**Customers in this segment**")
+            detail_columns = [
+                col for col in [
+                    "CustomerID", "Recency", "Frequency", "Monetary",
+                    "Segment", "SegmentName"
+                ] if col in detail_customers.columns
+            ]
+            st.dataframe(
+                detail_customers[detail_columns].sort_values(
+                    "Monetary", ascending=False
+                ).round(2),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.download_button(
+                "Download selected segment customers (CSV)",
+                detail_customers.to_csv(index=False).encode("utf-8"),
+                file_name="selected_segment_customers.csv",
+                mime="text/csv",
+                key="download_selected_segment_customers",
+            )
+
         st.markdown("### RFM relationship explorer")
         x_choice = st.selectbox(
             "Horizontal axis",
